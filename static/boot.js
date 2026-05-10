@@ -2085,12 +2085,15 @@ function applyBotName(){
     }
     if(typeof _applyTtsEnabled==='function') _applyTtsEnabled(localStorage.getItem('hermes-tts-enabled')==='true');
   }
-  // Non-blocking update check (fire-and-forget, once per tab session)
-  // ?test_updates=1 in URL forces banner display for testing (bypasses sessionStorage guards)
+  // Non-blocking update check (fire-and-forget, once per 30 min across tabs/sessions)
+  // ?test_updates=1 in URL forces banner display for testing (bypasses guards)
   const _testUpdates=new URLSearchParams(location.search).get('test_updates')==='1';
-  if(_testUpdates||(_bootSettings.check_for_updates!==false&&!sessionStorage.getItem('hermes-update-checked')&&!sessionStorage.getItem('hermes-update-dismissed'))){
-    const _checkUrl='api/updates/check'+(_testUpdates?'?simulate=1':'');
-    api(_checkUrl,{method:_testUpdates?'GET':'POST',body:_testUpdates?undefined:JSON.stringify({force:false})}).then(d=>{if(!_testUpdates)sessionStorage.setItem('hermes-update-checked','1');if((d.webui&&d.webui.behind>0)||(d.agent&&d.agent.behind>0))_showUpdateBanner(d);}).catch(()=>{});
+  const _UPDATE_TTL=30*60*1000;
+  const _lastChecked=parseInt(localStorage.getItem('hermes-update-checked-at')||'0',10);
+  const _updateDue=Date.now()-_lastChecked>_UPDATE_TTL;
+  if(_testUpdates||(_bootSettings.check_for_updates!==false&&_updateDue&&!sessionStorage.getItem('hermes-update-dismissed'))){
+    const _checkUrl='/api/updates/check'+(_testUpdates?'?simulate=1':'');
+    api(_checkUrl,{method:_testUpdates?'GET':'POST',body:_testUpdates?undefined:JSON.stringify({force:false})}).then(d=>{if(!_testUpdates)localStorage.setItem('hermes-update-checked-at',String(Date.now()));if((d.webui&&d.webui.behind>0)||(d.agent&&d.agent.behind>0))_showUpdateBanner(d);}).catch(()=>{});
   }
   // Fetch active profile
   try{const p=await api('/api/profile/active');S.activeProfile=p.name||'default';S.activeProfileIsDefault=!!p.is_default;}catch(e){S.activeProfile='default';S.activeProfileIsDefault=true;}

@@ -1538,8 +1538,14 @@ _PROVIDER_MODELS = {
     ],
     # Mistral — prefix used in OpenRouter model IDs (mistralai/mistral-large-latest)
     "mistralai": [
-        {"id": "mistral-large-latest", "label": "Mistral Large"},
-        {"id": "mistral-small-latest", "label": "Mistral Small"},
+        {"id": "magistral-medium-latest",  "label": "Magistral Medium (reasoning)"},
+        {"id": "magistral-small-latest",   "label": "Magistral Small (reasoning)"},
+        {"id": "mistral-large-latest",     "label": "Mistral Large"},
+        {"id": "mistral-medium-3.5",       "label": "Mistral Medium 3.5"},
+        {"id": "mistral-medium-latest",    "label": "Mistral Medium (latest)"},
+        {"id": "mistral-small-latest",     "label": "Mistral Small"},
+        {"id": "codestral-latest",         "label": "Codestral"},
+        {"id": "devstral-medium-latest",   "label": "Devstral Medium"},
     ],
     # Qwen (Alibaba) — prefix used in OpenRouter model IDs (qwen/qwen3-coder)
     "qwen": [

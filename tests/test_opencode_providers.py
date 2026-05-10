@@ -118,10 +118,11 @@ def test_shared_opencode_api_key_detects_zen_and_go(monkeypatch):
         config.cfg.update(old_cfg)
 
 
-def test_openai_codex_model_catalog_includes_gpt54():
-    """openai-codex catalog must include gpt-5.4 and the standard Codex lineup."""
+def test_openai_codex_model_catalog_includes_gpt55_and_standard_lineup():
+    """openai-codex catalog must include gpt-5.5 and the standard Codex lineup."""
     assert "openai-codex" in config._PROVIDER_MODELS
     ids = [m["id"] for m in config._PROVIDER_MODELS["openai-codex"]]
+    assert "gpt-5.5" in ids, f"gpt-5.5 missing from openai-codex catalog: {ids}"
     assert "gpt-5.4" in ids, f"gpt-5.4 missing from openai-codex catalog: {ids}"
     assert "gpt-5.4-mini" in ids, f"gpt-5.4-mini missing from openai-codex catalog: {ids}"
     assert "gpt-5.3-codex" in ids, f"gpt-5.3-codex missing from openai-codex catalog: {ids}"

@@ -7161,10 +7161,20 @@ async function loadSettingsPanel(){
           }
           modelSel.appendChild(og);
         }
-        // Append live-fetched models for the active provider, same as the
-        // chat-header dropdown does via _fetchLiveModels() (#872).
-        if(models.active_provider && typeof _fetchLiveModels==='function'){
-          _fetchLiveModels(models.active_provider, modelSel);
+        // Append live-fetched models for every visible provider group.
+        // Keep the static list instant, then enrich in the background.
+        if(typeof _fetchLiveModels==='function'){
+          const providerIds=[...new Set((((models||{}).groups||[])
+            .map(g=>g&&g.provider_id)
+            .filter(Boolean)))];
+          for(const g of ((models||{}).groups||[])){
+            if(g&&g.provider_id) _fetchLiveModels(g.provider_id, modelSel);
+          }
+          // Back-compat: if active_provider is not already represented by a
+          // visible group, still try it once.
+          if(models.active_provider && !providerIds.includes(models.active_provider)){
+            _fetchLiveModels(models.active_provider, modelSel);
+          }
         }
       }catch(e){}
       _settingsHermesDefaultModelOnOpen=(models&&models.default_model)||'';
