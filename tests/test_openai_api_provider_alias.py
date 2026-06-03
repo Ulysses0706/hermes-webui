@@ -54,3 +54,16 @@ class TestOpenaiApiSendPath:
         })
         result = cfg.model_with_provider_context("gpt-5.5", "openai-api")
         assert "openai" not in result or "openai-api" in result
+
+
+class TestOpenaiApiEnvDetection:
+    """OPENAI_API_KEY env detection must surface `openai-api`, not a bare `openai`
+    the agent registry can't resolve (#3443 detection-side, Codex follow-up)."""
+
+    def test_openai_api_key_detects_openai_api_not_bare_openai(self):
+        import inspect
+        src = inspect.getsource(cfg)
+        # The env-detection branch for OPENAI_API_KEY must add "openai-api".
+        assert 'detected_providers.add("openai-api")' in src
+        # And must NOT add a bare "openai" (no such slug in the agent registry).
+        assert 'detected_providers.add("openai")\n' not in src
