@@ -110,6 +110,13 @@ def _session_row_lineage_root_id(session, sessions_by_id) -> str:
     explicit = _session_field(session, "_lineage_root_id", None)
     if explicit:
         return str(explicit)
+    # A branch/fork is an independent, separately-visible session (it carries a
+    # parent_session_id purely for provenance), so it must count as its OWN pin
+    # lineage — only compression/continuation rows should collapse to a shared
+    # root. Without this, two pinned forks of the same parent would collapse to a
+    # single quota lineage and let the user exceed pinned_sessions_limit (#3288).
+    if _session_field(session, "session_source", None) == "fork":
+        return sid
     current = sid
     seen = {sid} if sid else set()
     parent = _session_field(session, "parent_session_id", None)
