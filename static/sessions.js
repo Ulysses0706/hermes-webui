@@ -3758,7 +3758,14 @@ function _ensureActiveSessionRowPresent(rows, sourceRows){
   const activeSid=_activeSessionIdForSidebar();
   if(!activeSid||rows.some(s=>s&&s.session_id===activeSid)) return rows;
   const activeRow=(Array.isArray(sourceRows)?sourceRows:[]).find(s=>s&&s.session_id===activeSid);
-  return activeRow?[activeRow,...rows]:rows;
+  // Only re-inject the active FRESHLY-CREATED 0-message ephemeral chat. An active
+  // conversation that already has messages and was filtered out by the search
+  // query must stay filtered — re-adding it here would pollute unrelated search
+  // results with the current chat (#3408 review, Codex).
+  if(activeRow && Number(activeRow.message_count||0)<=0){
+    return [activeRow,...rows];
+  }
+  return rows;
 }
 
 function clearOptimisticSessionStreaming(sid){
