@@ -88,8 +88,6 @@ def _session_field(session, field, default=None):
 
 def _session_counts_toward_pin_quota(session) -> bool:
     """Return True when a pinned session should consume visible pin quota."""
-    from api.models import _hide_from_default_sidebar
-
     if not _session_field(session, "pinned", False):
         return False
     if _session_field(session, "archived", False):
