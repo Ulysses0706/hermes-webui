@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Deleting a conversation now also removes its turn-journal and run-journal files.** `DELETE /api/session/delete` cleared the session JSON, `state.db` rows, and attachment dir, but left the turn journal (`sessions/_turn_journal/{sid}*.jsonl`, which stores the user's messages in plaintext) and the run journal (`sessions/_run_journal/{sid}/`, which stores the full request/response payloads) on disk — so a "deleted" conversation was still fully recoverable from the filesystem. The delete handler now calls two new best-effort cleanup helpers, `turn_journal.delete_turn_journal()` (removes the pid-scoped shards and the legacy single-file shard) and `run_journal.delete_run_journal()` (removes the per-session run directory), each of which is a safe no-op on an invalid id or a missing journal. (#3802)
+
+
 ## [v0.51.325] — 2026-06-08 — Release KO (in-app Help tab)
 
 ### Added
