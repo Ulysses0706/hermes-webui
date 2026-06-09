@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat transcript no longer renders blank (only date separators) for a session full of empty-content recovered turns (#3875).** Two compounding bugs. **Render side:** the per-message render extracted a Thinking trace only from inline `<think>`/channel/turn tags inside `content` — it never read a message's separate `reasoning` field (kept that way deliberately by #2565). An assistant turn with *empty visible content* but a populated `reasoning` field (e.g. a run-journal-recovered anchor: empty `content` + `reasoning` + `_recovered_from_run_journal`) therefore rendered no Thinking card and collapsed to an empty hidden anchor; a session made entirely of such rows painted as nothing but `SUNDAY`/`SATURDAY` date dividers. In legacy (Compact-tool-activity-off) mode, `renderMessages()` now falls back to the message's `reasoning`/`reasoning_content` field (via `_assistantReasoningPayloadText`) when the inline pass finds nothing AND the turn has no visible content, so the reasoning surfaces as a Thinking card and the turn is never blank — scoped to empty-content turns so normal answer-bearing messages are unchanged, and legacy-only because the simplified/Worklog path already derives reasoning (with an exact-answer echo-strip) higher up. **Data side:** run-journal recovery created an empty assistant "anchor" to host recovered tool cards for a tool-first stream, but the lazy read-side retry path re-ran recovery on every `get_session()` and a tool-first stream has no text to dedup on — so each retry, and each distinct interrupted stream over a session's life, appended another empty anchor, letting a heavily-interrupted session accumulate thousands of empty rows. `ensure_assistant_anchor` now reuses an existing empty recovered anchor for the same stream instead of appending a fresh one (one anchor per stream). (#3875)
+
 ## [v0.51.346] — 2026-06-09 — Release LJ (PWA notification controls)
 
 ### Added

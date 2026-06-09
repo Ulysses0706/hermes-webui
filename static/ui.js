@@ -8240,6 +8240,29 @@ function renderMessages(options){
       seg.setAttribute('data-live-assistant','1');
     }
     if(_ERR_MSG_RE.test(String(content||'').trim())) seg.dataset.error='1';
+    // A turn whose visible content is empty but which carries a separate
+    // `reasoning` field (e.g. a run-journal-recovered anchor: empty content +
+    // reasoning + `_recovered_from_run_journal`) extracts NO inline thinkingText
+    // and would render no Thinking Card at all — collapsing to an empty hidden
+    // anchor. A session made entirely of such rows then paints blank (only date
+    // separators) — the #3875 reporter's exact case (Compact tool activity OFF,
+    // i.e. legacy mode). Surface the message's reasoning payload as the Thinking
+    // Card source for these empty-content turns so the turn is never blank.
+    //
+    // LEGACY-MODE ONLY (!isSimplifiedToolCalling()): the simplified/Worklog path
+    // already derives reasoning above (line ~8149 via
+    // _worklogReasoningTextFromMessage, which strips an exact visible-answer echo
+    // so reasoning duplicating a sibling answer is not re-shown). Repopulating the
+    // raw reasoning here would bypass that echo-strip and re-render the duplicate
+    // as a Worklog Thinking card (Codex gate catch). In legacy mode there is no
+    // Worklog folding, so the raw payload is the correct Thinking-card source.
+    // Stays OUT of the inline-content `thinkingText` extraction block (#2565) and
+    // only fires for empty-content/no-inline-thinking turns, so answer-bearing
+    // messages are unchanged.
+    if(!isUser&&!isSimplifiedToolCalling()&&!thinkingText&&!String(content||'').trim()&&!filesHtml&&!statusHtml){
+      const _reasoningPayload=_assistantReasoningPayloadText(m);
+      if(_reasoningPayload) thinkingText=_reasoningPayload;
+    }
     if(thinkingText&&window._showThinking!==false){
       if(isSimplifiedToolCalling()&&_assistantThinkingBelongsInWorklog(m, rawIdx, toolCallAssistantIdxs)) assistantThinking.set(rawIdx, thinkingText);
       else if(window._showThinking!==false) seg.insertAdjacentHTML('beforeend', _thinkingCardHtml(thinkingText));
