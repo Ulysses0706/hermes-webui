@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streaming reply no longer flickers (disappears then reappears) during a live turn.** The `smd` parser writes the in-progress assistant reply into a DOM node inside `#liveAssistantTurn`. When `renderMessages()` was reached mid-stream (the clarify-response echo, or a CLI-import refresh push) its `inner.innerHTML=''` rebuild detached that node, so the parser kept writing into an orphaned element and the visible text vanished until the next stream event rebuilt the turn from scratch. `renderMessages()` now captures the live turn's actual DOM node before the rebuild and re-attaches it afterward (keeping the longer streamed segment via the existing live-segment merge), so the parser target stays connected and the streamed text never blanks. Only runs for the streaming session's own live turn; settled transcripts are untouched. (#3877)
+
 ## [v0.51.343] — 2026-06-09 — Release LG (Phase-1 batch: sidebar stale-row refresh, workspace refresh cache, ja locale)
 
 ### Fixed

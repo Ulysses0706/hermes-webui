@@ -7927,6 +7927,23 @@ function renderMessages(options){
     return m._statusCard||msgContent(m)||m.attachments?.length;
   });
   $('emptyState').style.display=(vis.length||preservedCompressionTaskMessages.length)?'none':'';
+  // Mid-stream flicker fix (#3877): when a renderMessages() rebuild is reached
+  // while THIS session is actively streaming (e.g. the clarify-response echo at
+  // messages.js, or a CLI-import refresh), the `inner.innerHTML=''` below detaches
+  // the live `#liveAssistantTurn` node — and the smd parser keeps writing into
+  // that now-orphaned node, so the streamed text vanishes until the next stream
+  // event rebuilds the turn ("disappears, then reappears"). Capture the live
+  // turn's actual DOM node (not its HTML — the parser holds a live reference into
+  // it) so it can be re-attached after the rebuild, keeping the parser target
+  // connected and the streamed text visible. Only for the streaming session's own
+  // live turn; never affects settled transcripts.
+  let _preservedLiveTurn=null;
+  if(sid&&INFLIGHT[sid]){
+    const _lt=document.getElementById('liveAssistantTurn');
+    if(_lt&&(!_lt.dataset||!_lt.dataset.sessionId||_lt.dataset.sessionId===sid)){
+      _preservedLiveTurn=_lt;
+    }
+  }
   inner.innerHTML='';
   const compressionNode=compressionState?_compressionCardsNode(compressionState):null;
   const {message:referenceMessage, rawIdx:referenceMessageRawIdx}=_latestCompressionReferenceMessage(
@@ -8785,6 +8802,35 @@ function renderMessages(options){
           if(!(seg.textContent||'').trim()) continue;
           seg.classList.remove('assistant-segment-worklog-source');
           seg.removeAttribute('aria-hidden');
+        }
+      }
+    }
+  }
+  // Re-attach the preserved live turn (#3877). The rebuild above recreated a
+  // live turn from S.messages, but the live assistant message's content is empty
+  // until the stream settles — so the fresh node shows no streamed text while the
+  // ORIGINAL node (still referenced by the smd parser) holds the real in-progress
+  // reply. If the rebuilt live turn has less streamed text than the preserved one,
+  // swap the preserved node back in so the parser target stays connected and the
+  // visible text never blanks. Reuses _mergeRestoredLiveAssistantSegment to keep
+  // the longer live segment. No-op when the rebuild already produced equal/more
+  // content (settled turn) or when nothing was streaming.
+  if(_preservedLiveTurn){
+    const _rebuilt=document.getElementById('liveAssistantTurn');
+    const _preservedLen=_liveAssistantSegmentTextLength(
+      _preservedLiveTurn.querySelector('[data-live-assistant="1"]')||_preservedLiveTurn
+    );
+    if(_preservedLen>0){
+      const _rebuiltLen=_rebuilt?_liveAssistantSegmentTextLength(
+        _rebuilt.querySelector('[data-live-assistant="1"]')||_rebuilt
+      ):-1;
+      if(_rebuiltLen<_preservedLen){
+        if(S.session) _preservedLiveTurn.dataset.sessionId=S.session.session_id;
+        if(_rebuilt){
+          _mergeRestoredLiveAssistantSegment(_preservedLiveTurn, _rebuilt);
+          _rebuilt.replaceWith(_preservedLiveTurn);
+        }else{
+          inner.appendChild(_preservedLiveTurn);
         }
       }
     }
