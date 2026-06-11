@@ -5801,6 +5801,14 @@ def handle_get(handler, parsed) -> bool:
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
+            _session_profile = getattr(s, 'profile', None) or None
+            try:
+                from api.profiles import get_active_profile_name
+                _active_profile = get_active_profile_name()
+            except Exception:
+                _active_profile = "default"
+            if not _profiles_match(_session_profile, _active_profile):
+                return bad(handler, "Session not found", 404)
             original_stream_id = getattr(s, "active_stream_id", None)
             _clear_stale_stream_state(s)
             cli_meta = _lookup_cli_session_metadata(sid) if _session_requires_cli_metadata_lookup(s) else {}
@@ -5808,7 +5816,6 @@ def handle_get(handler, parsed) -> bool:
             cli_messages = []
             state_db_messages = []
             metadata_summary = None
-            _session_profile = getattr(s, 'profile', None) or None
             if is_messaging_session:
                 cli_messages = get_cli_session_messages(sid)
             elif load_messages:
