@@ -297,8 +297,36 @@ function _stripWorkspaceDisplayPrefix(text){
 }
 function _renderUserFencedBlocks(text){
   const stash=[];
+  const contextStash=[];
   const mathStash=[];
   const stashMath=(type,src)=>{mathStash.push({type,src});return '\x00UM'+(mathStash.length-1)+'\x00';};
+  const sentContextHtml=(label,quoteText)=>{
+    const safeLabel=String(label||'').trim()||'Context';
+    const safeQuote=String(quoteText||'').replace(/\s+$/,'');
+    return `<figure class="sent-selection-context" data-selected-context="1"><figcaption class="sent-selection-context-label">${esc(safeLabel)}</figcaption><blockquote class="sent-selection-context-quote">${esc(safeQuote)}</blockquote></figure>`;
+  };
+  const stashContext=(label,quote)=>{contextStash.push(sentContextHtml(label,quote));return '\x00UC'+(contextStash.length-1)+'\x00';};
+  const stashSelectedContextBlocks=(value)=>{
+    const lines=String(value||'').split('\n');
+    const marker='<!-- hermes-selected-context -->';
+    const out=[];
+    for(let i=0;i<lines.length;i++){
+      const labelMatch=lines[i].match(/^\*\*([^\n]{1,200}):\*\*\s*$/);
+      if(!labelMatch){out.push(lines[i]);continue;}
+      const quoteLines=[];
+      let j=i+1;
+      if(lines[j]!==marker){out.push(lines[i]);continue;}
+      j++;
+      while(j<lines.length&&/^>/.test(lines[j])){
+        quoteLines.push(lines[j].replace(/^>[ \t]?/,''));
+        j++;
+      }
+      if(!quoteLines.length){out.push(lines[i]);continue;}
+      out.push(stashContext(labelMatch[1], quoteLines.join('\n')));
+      i=j-1;
+    }
+    return out.join('\n');
+  };
   const restoreMath=html=>String(html||'').replace(/\x00UM(\d+)\x00/g,(_,i)=>{
     const item=mathStash[+i];
     if(!item) return '';
@@ -340,10 +368,15 @@ function _renderUserFencedBlocks(text){
   s=s.replace(/\\\[([\s\S]+?)\\\]/g,(_,m)=>stashMath('display',m));
   s=s.replace(/\$([^\s$\n][^$\n]*?[^\s$\n]|\S)\$/g,(_,m)=>stashMath('inline',m));
   s=s.replace(/\\\((.+?)\\\)/g,(_,m)=>stashMath('inline',m));
+  // Render selected-context payloads produced by Reply with selection as calm
+  // quote cards in the sent user bubble. Keep ordinary user Markdown escaped;
+  // only blocks carrying the internal marker get custom treatment.
+  s=stashSelectedContextBlocks(s);
   // Escape remaining plain text and convert newlines to <br>
   s=esc(s).replace(/\n/g,'<br>');
-  // Restore stashed code blocks, then math placeholders as KaTeX targets.
+  // Restore stashed code/context blocks, then math placeholders as KaTeX targets.
   s=s.replace(/\x00UF(\d+)\x00/g,(_,i)=>stash[+i]);
+  s=s.replace(/\x00UC(\d+)\x00/g,(_,i)=>contextStash[+i]||'');
   s=restoreMath(s);
   return s;
 }
@@ -4077,6 +4110,12 @@ function _syncCtxIndicator(usage){
   const wrap=$('ctxIndicatorWrap');
   const el=$('ctxIndicator');
   if(!el)return;
+  const ctxHidden=!!(window._composerControlVisibility&&window._composerControlVisibility.hide_composer_context);
+  if(ctxHidden){
+    if(wrap) wrap.style.display='none';
+    _syncMobileCtxDisplay({visible:false});
+    return;
+  }
   // #1436: Use last_prompt_tokens only — NEVER fall back to cumulative
   // input_tokens for the "context window % used" calculation.  input_tokens
   // is summed across all turns, so dividing it by the context window gives a
@@ -4097,7 +4136,12 @@ function _syncCtxIndicator(usage){
     _syncMobileCtxDisplay({visible:false});
     return;
   }
-  if(wrap) wrap.style.display='';
+  if(wrap){
+    // Defensive reset: keep dynamic context display from being stuck hidden.
+    wrap.classList.remove('composer-control-hidden');
+    wrap.removeAttribute('aria-hidden');
+    wrap.style.display='';
+  }
   const hasPromptTok=!!promptTok;
   const rawPct=hasPromptTok?Math.round((promptTok/ctxWindow)*100):0;
   const pct=Math.min(100,rawPct);
@@ -5251,11 +5295,20 @@ function setStatus(t){
 function setComposerStatus(t){
   const el=$('composerStatus');
   if(!el)return;
+  const statusHidden=!!(window._composerControlVisibility&&window._composerControlVisibility.hide_composer_status);
+  if(statusHidden){
+    el.style.display='none';
+    el.textContent='';
+    return;
+  }
   if(!t){
     el.style.display='none';
     el.textContent='';
     return;
   }
+  // Defensive reset: a stale hidden class should never block live status text.
+  el.classList.remove('composer-control-hidden');
+  el.removeAttribute('aria-hidden');
   el.textContent=t;
   el.style.display='';
 }
@@ -5301,7 +5354,7 @@ function unlockComposerForClarify(){
 
 function _composerHasContent(){
   const msg=$('msg');
-  return !!((msg&&msg.value.trim().length>0)||S.pendingFiles.length>0);
+  return !!((msg&&msg.value.trim().length>0)||S.pendingFiles.length>0||(typeof window._hasPendingSelections==='function'&&window._hasPendingSelections()));
 }
 
 function _getExplicitBusyCommandAction(text){

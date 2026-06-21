@@ -3,6 +3,31 @@
 
 ## [Unreleased]
 
+## [v0.51.564] — 2026-06-21 — Release TW (loopback sidecar diagnostics)
+
+### Added
+
+- **Settings → Extensions now surfaces loopback "sidecar" companion-service diagnostics.** A manifest extension can declare a loopback sidecar (`type: loopback`, an `http(s)` origin restricted to `127.0.0.1` / `localhost` / `[::1]`, with an optional sanitized health path); WebUI renders it as a read-only "Loopback sidecars" card and shows a live health badge by probing the declared health URL directly from your browser (credentials omitted, response body never read). Origins/paths are strictly validated (no userinfo, no traversal, loopback-only) and rejected declarations are never echoed back. Opt-in via the extension manifest; no server-side proxying. Thanks @santastabber. (#4612)
+
+## [v0.51.563] — 2026-06-21 — Release TV (per-control composer footer visibility)
+
+### Added
+
+- **Composer footer controls can now be shown or hidden individually from Settings → Appearance.** The footer controls are grouped into "primary" and "situational" sets, and each (attach, saved prompts, mic, voice mode, YOLO, profile, workspace, model, reasoning, context, toolsets, status, quota chip, background badge, mobile config) can be toggled on or off. Preferences persist per profile and apply live without a reload. Purely additive visibility toggles — the footer layout itself is unchanged. Thanks @Paladin173. (#4598)
+
+## [v0.51.562] — 2026-06-21 — Release TU (selected-context quote cards)
+
+### Added
+
+- **Selected chat text now renders as richer "quote cards" instead of plain composer chips.** When you reply with a selection (the named context-blocks feature), the composer shows each block as a card with an accent rail, an editable label (click / Enter / F2 to rename, 120-char cap), a remove button, and a clipped excerpt; in the conversation, a sent message that carries a labeled selection renders the quote as a `<figure>` card. Labels and quoted text are HTML-escaped on every path (no XSS). Thanks @santastabber. (#4380)
+
+## [v0.51.561] — 2026-06-21 — Release TT (context-window indicator stays correct after model switch)
+
+### Fixed
+
+- **The live context-window indicator no longer reverts to a stale value mid-conversation after a model switch.** On a session whose model was switched in place (e.g. to `claude-opus-4.8` with a 1M window), the streaming context snapshot could surface a *previous* model's cached context window (e.g. `claude-opus-4.5`'s 168k) — so a refresh showed the correct 1M but sending a message reverted the indicator to 168k and tripped auto-compress early. The correction now applies consistently across all three paths that surface the window (the live metering snapshot, the final session save, and the terminal `done` SSE payload): each resolves the real per-model window through the same helper `GET /api/session` hydration uses (honoring nested per-model config overrides and custom providers) and corrects whenever it differs from the compressor's cached value, while never letting a low-confidence 256k metadata fallback clobber a larger cached window. The lookup still runs at most once per stream (no per-tick cost). Thanks @allenliang2022. (#4618)
+- **`bootstrap.py` now finds the Hermes Agent when it was installed as root (FHS layout) or behind the current shell-wrapper `hermes` launcher (#root-install).** A fresh root install on Linux places the agent at `/usr/local/lib/hermes-agent` (CLI linked into `/usr/local/bin`), and the modern `hermes` launcher is a `#!/usr/bin/env bash` wrapper that `exec`s the venv entrypoint. The old discovery only checked `~/.hermes/hermes-agent`-style paths and parsed the launcher's shebang as a Python interpreter, so on a root VM it found nothing, built a WebUI-only `.venv`, and aborted with "Python environment cannot import both WebUI dependencies and Hermes Agent." Discovery now also probes `/usr/local/lib/hermes-agent` and follows the launcher's `exec` target (any absolute path inside the script) up to `run_agent.py`, so `python3 bootstrap.py` works out of the box for root/Proxmox/container installs with no `HERMES_WEBUI_PYTHON` override needed.
+
 ## [v0.51.560] — 2026-06-21 — Release TS (recovered run-journal output reaches the model)
 
 ### Fixed
