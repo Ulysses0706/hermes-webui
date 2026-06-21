@@ -746,6 +746,34 @@ function _restoreMessageViewportAnchor(anchor, rawIdxDelta){
   requestAnimationFrame(()=>{ _programmaticScroll=false; });
   return true;
 }
+let _messageViewportAnchorRemounting=false;
+function _remountMessageViewportAnchor(anchor){
+  const container=$('messages');
+  if(!container||!anchor||_messageViewportAnchorRemounting) return false;
+  const targetIdx=Number(anchor.rawIdx);
+  if(!Number.isFinite(targetIdx)) return false;
+  if(container.querySelector(`[data-msg-idx="${targetIdx}"]`)) return true;
+  if(typeof _getVisibleMessagesWithIdx!=='function'||
+     typeof _messageVisibleIndexForRawIdx!=='function'||
+     typeof _messageVirtualScrollTopForVisibleIdx!=='function'||
+     typeof renderMessages!=='function') return false;
+  const visWithIdx=_getVisibleMessagesWithIdx();
+  const visIdx=_messageVisibleIndexForRawIdx(targetIdx,visWithIdx);
+  if(visIdx<0) return false;
+  // A virtualized anchor may be outside the current DOM. Scroll to its virtual
+  // row and render once so the semantic restore below has a real target.
+  _programmaticScroll=true;
+  container.scrollTop=_messageVirtualScrollTopForVisibleIdx(visWithIdx,visIdx,container);
+  _messageVirtualWindowKey='';
+  _messageViewportAnchorRemounting=true;
+  try{
+    renderMessages({preserveScroll:true});
+  }finally{
+    _messageViewportAnchorRemounting=false;
+    requestAnimationFrame(()=>{ setTimeout(()=>{ _programmaticScroll=false; },0); });
+  }
+  return !!container.querySelector(`[data-msg-idx="${targetIdx}"]`);
+}
 function _compensateScrollForMeasurementDelta(renderFn){
   const container=$('messages');
   if(!container) return renderFn();
@@ -5857,7 +5885,10 @@ function showConfirmDialog(opts={}){
   if(title) title.textContent=opts.title||t('dialog_confirm_title');
   if(desc) desc.textContent=opts.message||'';
   if(input){input.style.display='none';input.value='';}
-  if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
+  if(cancelBtn){
+    if(opts.hideCancel){cancelBtn.style.display='none';}
+    else{cancelBtn.style.display='';cancelBtn.textContent=opts.cancelLabel||t('cancel');}
+  }
   if(confirmBtn){
     confirmBtn.textContent=opts.confirmLabel||t('dialog_confirm_btn');
     confirmBtn.classList.toggle('danger',!!opts.danger);
@@ -5887,9 +5918,18 @@ function showPromptDialog(opts={}){
     input.value=prefill;input.placeholder=opts.placeholder||'';
     input.autocomplete='off';input.spellcheck=false;
   }
-  if(cancelBtn) cancelBtn.textContent=opts.cancelLabel||t('cancel');
-  if(confirmBtn){confirmBtn.textContent=opts.confirmLabel||t('create');confirmBtn.classList.remove('danger');}
-  if(dialog) dialog.setAttribute('role','dialog');
+  if(cancelBtn){
+    // A prior showConfirmDialog({hideCancel:true}) (e.g. the outside-symlink info
+    // dialog, #4581) may have hidden the shared Cancel button; always restore it
+    // so a subsequent prompt keeps its Cancel affordance.
+    cancelBtn.style.display='';
+    cancelBtn.textContent=opts.cancelLabel||t('cancel');
+  }
+  if(confirmBtn){
+    confirmBtn.textContent=opts.confirmLabel||t('create');
+    confirmBtn.classList.toggle('danger',!!opts.danger);
+  }
+  if(dialog) dialog.setAttribute('role',opts.danger?'alertdialog':'dialog');
   if(overlay){overlay.style.display='flex';overlay.setAttribute('aria-hidden','false');}
   return new Promise(resolve=>{
     APP_DIALOG.resolve=resolve;
@@ -6064,6 +6104,8 @@ function _buildBrowserUtterance(text, btn){
 }
 
 function _playEdgeTtsChunked(text, btn){
+  _ttsSpeaking=true;
+  if(btn) btn.dataset.speaking='1';
   const chunks=_splitForTTS(text);
   const _playOne=function(idx){
     if(idx>=chunks.length){
@@ -9068,6 +9110,83 @@ function _anchorSceneNodeForRow(row, opts){
   node.setAttribute('data-anchor-source-event-type',String(row.source_event_type||''));
   return node;
 }
+function _anchorSceneTransparentNodeForRow(row, opts){
+  const settled=!!(opts&&opts.settled);
+  if(!row) return null;
+  let node=null;
+  const meta={
+    segmentSeq:row.segment_seq||row.segmentSeq||'',
+    burstId:row.activity_burst_id||row.burst_id||row.burstId||'',
+  };
+  if(row.role==='prose'){
+    // The settled assistant segment already owns the FINAL answer prose, so a
+    // prose row whose text matches the final answer must be suppressed here to
+    // avoid duplicating the answer. But INTERMEDIATE progress prose (the
+    // between-tool narration from earlier rounds) is NOT the final answer and
+    // belongs in the chronological transparent history — dropping it loses the
+    // interleaving the user saw live (#4568: tools were restored but mid-turn
+    // prose still vanished on reload). Render intermediate prose as an inline
+    // assistant-segment (same shape _anchorSceneNodeForRow builds), skip only
+    // the final-answer duplicate.
+    const text=String(row.text||'').trim();
+    if(!text) return null;
+    const finalAnswer=String((opts&&opts.finalAnswer)||'').trim();
+    if(finalAnswer&&_anchorSceneProseMatchesFinalAnswer(text,finalAnswer)) return null;
+    node=_anchorSceneNodeForRow(row,{settled});
+    if(!node) return null;
+    node=_decorateTransparentEventRow(node,{type:'prose',text,preview:text,...meta});
+  }else if(row.role==='thinking'){
+    if(window._showThinking===false) return null;
+    const text=String(row.text||row.thinking&&row.thinking.text||'').trim();
+    if(!text) return null;
+    node=_decorateTransparentEventRow(_thinkingActivityNode(text,false,row.row_id||row.local_id||'anchor-thinking'),{
+      type:'thinking',
+      text,
+      preview:text,
+      ...meta,
+    });
+  }else if(row.role==='tool'){
+    const toolCall=_anchorSceneToolCallFromRow(row,{settled});
+    node=_decorateTransparentEventRow(buildToolCard(toolCall),{
+      type:'tool',
+      name:toolCall&&toolCall.name,
+      status:_transparentToolStatus(toolCall,true),
+      toolCall,
+      ...meta,
+    });
+  }else{
+    node=_anchorSceneNodeForRow(row,{settled});
+    node=_decorateTransparentEventRow(node,{
+      type:String(row.role||'activity'),
+      ...meta,
+    });
+  }
+  if(!node) return null;
+  node.setAttribute('data-anchor-scene-row','1');
+  node.setAttribute('data-anchor-settled-scene-row','1');
+  node.setAttribute('data-anchor-row-id',String(row.row_id||row.local_id||''));
+  node.setAttribute('data-anchor-row-role',String(row.role||'activity'));
+  node.setAttribute('data-anchor-source-event-type',String(row.source_event_type||''));
+  return node;
+}
+// Whitespace-insensitive compare so a scene prose row that IS the final answer
+// (possibly re-wrapped) is recognized and not duplicated against the segment.
+// Codex #4568: the prefix tolerance must NOT be able to suppress a DISTINCT
+// intermediate progress row that merely happens to be a prefix of the final
+// answer (e.g. "I found the issue and I'm applying the fix now." when the final
+// answer starts with that sentence). So require exact normalized equality, with
+// a prefix tolerance allowed ONLY when the two strings are near-equal length
+// (>=0.9 ratio, shorter >=80 chars) — i.e. genuine re-wrap/truncation of the
+// SAME text, never a short intermediate sentence that prefixes a long answer.
+function _anchorSceneProseMatchesFinalAnswer(proseText, finalAnswer){
+  const norm=(s)=>String(s||'').replace(/\s+/g,' ').trim();
+  const a=norm(proseText), b=norm(finalAnswer);
+  if(!a||!b) return false;
+  if(a===b) return true;
+  if(!(a.startsWith(b)||b.startsWith(a))) return false;
+  const shorter=Math.min(a.length,b.length), longer=Math.max(a.length,b.length);
+  return shorter>=80 && (shorter/longer)>=0.9;
+}
 function _anchorSceneWorklogGroup(blocks, opts){
   if(!blocks) return null;
   const live=!!(opts&&opts.live);
@@ -9251,8 +9370,48 @@ if(typeof window!=='undefined'){
   window._projectLiveAnchorActivitySceneForStream=_projectLiveAnchorActivitySceneForStream;
   window.isLiveAnchorActivitySceneOwner=isLiveAnchorActivitySceneOwner;
 }
+function _renderSettledAnchorSceneTransparentForMessage(message, segment, rawIdx){
+  if(!message||!message._anchor_activity_scene||!segment) return false;
+  const blocks=_assistantTurnBlocks(segment.closest('.assistant-turn'));
+  if(!blocks) return false;
+  const scene=message._anchor_activity_scene;
+  const rows=_anchorSceneRowsForRendering(scene,{settled:true});
+  if(!rows.length) return false;
+  // The assistant segment owns the final answer; pass it so intermediate prose
+  // rows render but the final-answer-duplicate prose row is suppressed.
+  const finalAnswer=String(
+    (scene&&typeof scene.final_answer==='string'&&scene.final_answer)
+    || _assistantAnchorSceneFinalAnswerText(message)
+    || (typeof msgContent==='function'?msgContent(message):'')
+    || ''
+  );
+  blocks.querySelectorAll('[data-anchor-settled-scene-row="1"],.transparent-event-row[data-anchor-scene-row="1"]').forEach(el=>el.remove());
+  blocks.querySelectorAll('.assistant-segment[data-msg-idx]').forEach(node=>{
+    const idx=Number(node.getAttribute('data-msg-idx'));
+    if(Number.isFinite(idx)&&idx<rawIdx){
+      node.classList.add('assistant-segment-worklog-source');
+      node.setAttribute('aria-hidden','true');
+    }
+  });
+  let wrote=false;
+  for(const row of rows){
+    const node=_anchorSceneTransparentNodeForRow(row,{settled:true,finalAnswer});
+    if(!node) continue;
+    if(segment.parentElement===blocks) blocks.insertBefore(node,segment);
+    else blocks.appendChild(node);
+    wrote=true;
+  }
+  if(wrote){
+    const turn=segment.closest('.assistant-turn');
+    if(turn) _syncTransparentEventControls(turn);
+  }
+  return wrote;
+}
 function _renderSettledAnchorSceneForMessage(message, segment, rawIdx){
   if(!message||!message._anchor_activity_scene||!segment) return false;
+  if(typeof isTransparentStream==='function'&&isTransparentStream()){
+    return _renderSettledAnchorSceneTransparentForMessage(message,segment,rawIdx);
+  }
   if(typeof isCompactWorklogMode==='function'&&!isCompactWorklogMode()) return false;
   const blocks=_assistantTurnBlocks(segment.closest('.assistant-turn'));
   if(!blocks) return false;
@@ -10420,24 +10579,39 @@ function _restoreMessageScrollSnapshot(snapshot){
   const el=$('messages');
   if(!el||!snapshot) return;
   const maxTop=Math.max(0,el.scrollHeight-el.clientHeight);
-  const restoredViaAnchor=(snapshot.anchor&&typeof _restoreMessageViewportAnchor==='function')
+  let restoredViaAnchor=(snapshot.anchor&&typeof _restoreMessageViewportAnchor==='function')
     ? _restoreMessageViewportAnchor(snapshot.anchor,0)
     : false;
+  if(!restoredViaAnchor&&typeof _remountMessageViewportAnchor==='function'&&_remountMessageViewportAnchor(snapshot.anchor)){
+    restoredViaAnchor=(typeof _restoreMessageViewportAnchor==='function')
+      ? _restoreMessageViewportAnchor(snapshot.anchor,0)
+      : false;
+  }
   if(!restoredViaAnchor){
     _programmaticScroll=true;
     el.scrollTop=Math.max(0,Math.min(Number(snapshot.top)||0,maxTop));
   }
   // Sync _lastScrollTop after programmatic restore so sticky-unpin does not false-trigger (#1731).
   _lastScrollTop=el.scrollTop;
-  const bottomDistance=el.scrollHeight-el.scrollTop-el.clientHeight;
-  if(bottomDistance>250){
+  if(snapshot.userUnpinned===true){
     _messageUserUnpinned=true;
     _scrollPinned=false;
     _nearBottomCount=0;
-  }else if(bottomDistance<=120){
+  }else if(snapshot.pinned===true){
     _messageUserUnpinned=false;
     _scrollPinned=true;
     _nearBottomCount=2;
+  }else{
+    const bottomDistance=el.scrollHeight-el.scrollTop-el.clientHeight;
+    if(bottomDistance>250){
+      _messageUserUnpinned=true;
+      _scrollPinned=false;
+      _nearBottomCount=0;
+    }else if(bottomDistance<=120){
+      _messageUserUnpinned=false;
+      _scrollPinned=true;
+      _nearBottomCount=2;
+    }
   }
   if(!restoredViaAnchor){
     requestAnimationFrame(()=>{ setTimeout(()=>{_programmaticScroll=false;},0); });
@@ -10449,22 +10623,10 @@ function _restoreMessageScrollSnapshotSameFrame(snapshot){
   let restoredViaAnchor=(snapshot.anchor&&typeof _restoreMessageViewportAnchor==='function')
     ? _restoreMessageViewportAnchor(snapshot.anchor,0)
     : false;
-  if(!restoredViaAnchor&&snapshot.anchor&&snapshot.anchor.rawIdx!=null&&
-     !el.querySelector(`[data-msg-idx="${snapshot.anchor.rawIdx}"]`)&&
-     typeof _getVisibleMessagesWithIdx==='function'&&
-     typeof _messageVisibleIndexForRawIdx==='function'&&
-     typeof _messageVirtualScrollTopForVisibleIdx==='function'){
-    const visWithIdx=_getVisibleMessagesWithIdx();
-    const visIdx=_messageVisibleIndexForRawIdx(snapshot.anchor.rawIdx,visWithIdx);
-    if(visIdx>=0){
-      _programmaticScroll=true;
-      el.scrollTop=_messageVirtualScrollTopForVisibleIdx(visWithIdx,visIdx,el);
-      _messageVirtualWindowKey='';
-      renderMessages({preserveScroll:true});
-      restoredViaAnchor=(typeof _restoreMessageViewportAnchor==='function')
-        ? _restoreMessageViewportAnchor(snapshot.anchor,0)
-        : false;
-    }
+  if(!restoredViaAnchor&&typeof _remountMessageViewportAnchor==='function'&&_remountMessageViewportAnchor(snapshot.anchor)){
+    restoredViaAnchor=(typeof _restoreMessageViewportAnchor==='function')
+      ? _restoreMessageViewportAnchor(snapshot.anchor,0)
+      : false;
   }
   if(!restoredViaAnchor){
     const maxTop=Math.max(0,el.scrollHeight-el.clientHeight);
@@ -14197,9 +14359,13 @@ function _renderTreeItems(container, entries, depth){
     el.ondragend=()=>{el.classList.remove('dragging');_clearWorkspaceMoveDragOver();};
 
     const isLk = item.type === 'symlink';
-    const isDirLike = item.type === 'dir' || (isLk && item.is_dir);
-    const isFileLike = !isDirLike;
+    const isExternalLink = isLk && item.target_outside_workspace;
+    // External symlinks are display-only: not expandable, not openable.
+    // The read gate (safe_resolve_ws) still blocks navigation through them.
+    const isDirLike = !isExternalLink && (item.type === 'dir' || (isLk && item.is_dir));
+    const isFileLike = !isExternalLink && !isDirLike;
     el.dataset.wsIsDir = String(isDirLike);
+    if(isExternalLink){el.removeAttribute('draggable');el.ondragstart=null;}
 
     if(isDirLike){
       // Toggle arrow for directories
@@ -14220,9 +14386,11 @@ function _renderTreeItems(container, entries, depth){
     // Icon
     const iconEl=document.createElement('span');
     iconEl.className='file-icon';
-    iconEl.innerHTML = isDirLike
-      ? (isLk ? li('link', 14) : li('folder', 14))
-      : (isLk ? li('link', 14) : fileIcon(item.name, item.type));
+    iconEl.innerHTML = isExternalLink
+      ? li('external-link', 14)
+      : isDirLike
+        ? (isLk ? li('link', 14) : li('folder', 14))
+        : (isLk ? li('link', 14) : fileIcon(item.name, item.type));
     el.appendChild(iconEl);
 
     // Name
@@ -14254,6 +14422,8 @@ function _renderTreeItems(container, entries, depth){
       if(_nameClickTimer){clearTimeout(_nameClickTimer);_nameClickTimer=null;}
       // For directories, double-click navigates (breadcrumb view)
       if(isDirLike){loadDir(item.path);return;}
+      // External symlinks: show informational dialog, not rename
+      if(isExternalLink){if(typeof el.onclick==='function')el.onclick(e);return;}
       const inp=document.createElement('input');
       inp.className='file-rename-input';inp.value=item.name;
       inp.onclick=(e2)=>e2.stopPropagation();
@@ -14341,6 +14511,21 @@ function _renderTreeItems(container, entries, depth){
           }
           renderFileTree();
         }
+      };
+    }else if(isExternalLink){
+      // Display-only: the link points outside the workspace. We do NOT disclose
+      // the resolved outside path (#4581 hardening) and do NOT call openFile —
+      // the read gate (safe_resolve_ws) blocks navigation through the link.
+      el.onclick=async(e)=>{
+        e.stopPropagation();
+        await showConfirmDialog({
+          title:item.name,
+          message:t('external_link_open_confirm'),
+          confirmLabel:t('dialog_confirm_btn'),
+          danger:false,
+          hideCancel:true,
+          focusCancel:false,
+        });
       };
     }else{
       el.onclick=async()=>openFile(item.path);

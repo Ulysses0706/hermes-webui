@@ -1690,10 +1690,10 @@ def _session_list_cache_path_stamp(path: Path | None) -> tuple[int, int]:
         return (0, 0)
 
 
-def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]:
+def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], object, int]:
     _cache_profile, _cache_all_profiles, cache_show_cli_sessions, *_rest = key
     if not cache_show_cli_sessions:
-        return ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0))
+        return ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0), None, 0)
     try:
         state_db_path = Path(_active_state_db_path())
     except Exception:
@@ -1714,6 +1714,11 @@ def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple
         settings_file = SETTINGS_FILE
     except Exception:
         settings_file = None
+    try:
+        from api.config import _SETTINGS_WRITE_VERSION
+        swv = _SETTINGS_WRITE_VERSION
+    except Exception:
+        swv = 0
     return (
         _session_list_cache_path_stamp(state_db_path),
         _session_list_cache_path_stamp(state_db_wal_path),
@@ -1725,6 +1730,7 @@ def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple
         # frame size), so without this a freshly-committed CLI/gateway session
         # could be served stale for the cache TTL. Mirrors the models-layer fix.
         _session_list_cache_state_db_fingerprint(state_db_path),
+        swv,
     )
 
 
@@ -3126,9 +3132,16 @@ def _anchor_scene_row_looks_like_final_answer(row_text_key: str, final_key: str)
         return False
     if row_text_key == final_key:
         return True
-    return len(row_text_key) >= 80 and (
-        final_key.startswith(row_text_key) or row_text_key.startswith(final_key)
-    )
+    # #4587: align with the renderer's _anchorSceneProseMatchesFinalAnswer — a
+    # prefix-like overlap only counts as "the final answer" when it's a
+    # NEAR-complete match (ratio >= 0.9). A shorter intermediate-prose row that
+    # is merely a prefix of the final answer is legitimate progress narration and
+    # must be preserved in the persisted scene, not filtered out.
+    if not (final_key.startswith(row_text_key) or row_text_key.startswith(final_key)):
+        return False
+    shorter = min(len(row_text_key), len(final_key))
+    longer = max(len(row_text_key), len(final_key))
+    return shorter >= 80 and longer > 0 and (shorter / longer) >= 0.9
 
 
 def _anchor_scene_text_has_long_overlap(text_key: str, final_key: str) -> bool:
@@ -5351,6 +5364,10 @@ def _resolve_cli_import_metadata(session_id: str, *, requested_profile=None, all
 
 
 def _messaging_session_identity(session: dict, raw_source: str) -> str:
+    sid = _safe_first(session.get("session_id"))
+    if sid and _is_pre_compression_continuation_row(session):
+        return f"{raw_source}|session_id:{sid}"
+
     metadata = _lookup_gateway_session_identity(session.get("session_id"))
     session_key = _safe_first(
         metadata.get("session_key"),
@@ -5385,7 +5402,27 @@ def _messaging_session_identity(session: dict, raw_source: str) -> str:
 
     if identity_parts:
         return f"{raw_source}|" + "|".join(identity_parts)
+
     return raw_source
+
+
+def _is_pre_compression_snapshot_id(session_id: str) -> bool:
+    sid = _safe_first(session_id)
+    if not sid or not all(c in "0123456789abcdefghijklmnopqrstuvwxyz_" for c in sid):
+        return False
+    try:
+        path = SESSION_DIR / f"{sid}.json"
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return bool(data.get("pre_compression_snapshot"))
+    except Exception:
+        return False
+
+
+def _is_pre_compression_continuation_row(session: dict) -> bool:
+    parent_sid = _safe_first(session.get("parent_session_id"))
+    return bool(parent_sid and _is_pre_compression_snapshot_id(parent_sid))
 
 
 def _session_messaging_raw_source(session: dict) -> str:
@@ -5449,9 +5486,14 @@ def _should_hide_stale_messaging_session(
         return True
 
     if not _has_durable_messaging_identity(session):
+        if _is_pre_compression_continuation_row(session):
+            return False
+        parent_sid = _safe_first(session.get("parent_session_id"))
+        if parent_sid and parent_sid in active_gateway_session_ids:
+            return True
         return True
 
-    if session.get("parent_session_id"):
+    if session.get("parent_session_id") and not _is_pre_compression_continuation_row(session):
         return True
 
     message_count = _numeric_count(session.get("message_count"))
@@ -6271,6 +6313,105 @@ from api.models import (
     is_cron_session,
     is_safe_session_id,
 )
+
+
+def _pre_compression_continuation_session_id(session) -> str | None:
+    """Return the newest visible descendant for a hidden compression snapshot.
+
+    Mobile browsers can miss the final SSE `done` handoff while backgrounded.
+    On reload they may request the archived pre-compression session id from the
+    stale URL/localStorage. The old snapshot is intentionally hidden from the
+    sidebar, so expose a lightweight recovery hint when a child continuation
+    exists either in memory or on disk. Follow bounded snapshot-to-snapshot hops
+    so repeated compression still lands on the latest visible continuation.
+    """
+    if not getattr(session, "pre_compression_snapshot", False):
+        return None
+    sid = _safe_first(getattr(session, "session_id", None))
+    if not sid:
+        return None
+    # #2980 hardening: the resolved continuation is written to the client's
+    # URL/localStorage, so it must stay within the requested snapshot's own
+    # profile. Children are matched only by parent_session_id below; a
+    # crafted/corrupt foreign-profile sidecar whose parent_session_id collided
+    # with this snapshot's id would otherwise leak cross-profile. Pin the
+    # snapshot's profile and reject any child that isn't profile-matched.
+    snapshot_profile = getattr(session, "profile", None)
+
+    def _child_rows() -> list:
+        rows = []
+        seen_ids = set()
+        try:
+            with LOCK:
+                memory_sessions = list(SESSIONS.values())
+            for child in memory_sessions:
+                child_sid = _safe_first(getattr(child, "session_id", None))
+                if not child_sid or child_sid in seen_ids:
+                    continue
+                seen_ids.add(child_sid)
+                rows.append(child)
+        except Exception:
+            pass
+        try:
+            for path in SESSION_DIR.glob("*.json"):
+                if path.name.startswith("_"):
+                    continue
+                child_sid = path.stem
+                if not child_sid or child_sid in seen_ids:
+                    continue
+                child = Session.load_metadata_only(child_sid)
+                if child:
+                    seen_ids.add(child_sid)
+                    rows.append(child)
+        except Exception:
+            pass
+        return rows
+
+    children_by_parent: dict[str, list] = {}
+    for child in _child_rows():
+        parent_sid = _safe_first(getattr(child, "parent_session_id", None))
+        child_sid = _safe_first(getattr(child, "session_id", None))
+        if not parent_sid or not child_sid or child_sid == sid:
+            continue
+        # Cross-profile guard: only follow continuations within the snapshot's profile.
+        if not _profiles_match(getattr(child, "profile", None), snapshot_profile):
+            continue
+        children_by_parent.setdefault(parent_sid, []).append(child)
+
+    candidates = []
+    frontier = [sid]
+    seen = {sid}
+    for _ in range(20):
+        if not frontier:
+            break
+        parent_sid = frontier.pop(0)
+        for child in children_by_parent.get(parent_sid, []):
+            child_sid = _safe_first(getattr(child, "session_id", None))
+            if not child_sid or child_sid in seen:
+                continue
+            seen.add(child_sid)
+            if getattr(child, "pre_compression_snapshot", False):
+                frontier.append(child_sid)
+            else:
+                candidates.append(child)
+
+    if not candidates:
+        return None
+    latest = max(
+        candidates,
+        key=lambda child: float(
+            _safe_first(
+                getattr(child, "updated_at", None),
+                getattr(child, "created_at", None),
+                0,
+            ) or 0
+        ),
+    )
+    latest_sid = getattr(latest, "session_id", None) or None
+    # Only hand the client a well-formed session id (it gets written to URL/localStorage).
+    if latest_sid and not is_safe_session_id(latest_sid):
+        return None
+    return latest_sid
 from api.workspace import (
     load_workspaces,
     save_workspaces,
@@ -8588,6 +8729,7 @@ def handle_get(handler, parsed) -> bool:
             "passkeys_enabled": bool(passkeys),
             "passkeys_count": len(passkeys),
             "passkey_feature_flag": passkey_flag,
+            "auth_disabled_acknowledged": bool(load_settings().get("auth_disabled_acknowledged")) if not auth_enabled else False,
         })
 
     if parsed.path in ("/manifest.json", "/manifest.webmanifest"):
@@ -8834,6 +8976,21 @@ def handle_get(handler, parsed) -> bool:
         settings["password_env_var"] = bool(
             os.getenv("HERMES_WEBUI_PASSWORD", "").strip()
         )
+        # Auth-state fields for frontend safety badge / confirmation flows
+        from api.auth import get_password_hash, is_auth_enabled
+        settings["auth_enabled"] = is_auth_enabled()
+        settings["password_auth_enabled"] = get_password_hash() is not None
+        try:
+            from api.auth import _passkey_feature_flag_enabled as _pffe
+            from api.passkeys import registered_credentials as _rc
+            if _pffe():
+                settings["passkeys_enabled"] = bool(_rc())
+                settings["passwordless_enabled"] = bool(_rc()) and not settings["password_auth_enabled"]
+            else:
+                settings["passkeys_enabled"] = False
+                settings["passwordless_enabled"] = False
+        except Exception:
+            pass
         # Inject the running version so the UI badge stays in sync with git tags
         # without any manual release step.
         try:
@@ -8866,6 +9023,11 @@ def handle_get(handler, parsed) -> bool:
 
     if parsed.path == "/api/onboarding/status":
         return j(handler, get_onboarding_status())
+
+    if parsed.path == "/api/extensions/status":
+        from api.extensions import get_extension_status
+
+        return j(handler, get_extension_status())
 
     if parsed.path.startswith("/extensions/"):
         from api.extensions import serve_extension_static
@@ -9187,6 +9349,11 @@ def handle_get(handler, parsed) -> bool:
                     float(raw.get("updated_at") or 0),
                     _merged_last_message_at,
                 )
+            # #2980: surface the visible continuation for a hidden pre-compression
+            # snapshot so a mobile reload mid-compression can recover to it.
+            continuation_sid = _pre_compression_continuation_session_id(s)
+            if continuation_sid:
+                raw["continuation_session_id"] = continuation_sid
             if cli_meta and _session_source_is_webui(cli_meta):
                 raw = _reconcile_session_detail_source_flags(raw, cli_meta)
             elif cli_meta and _is_messaging_session_record(cli_meta):
@@ -11340,9 +11507,11 @@ def handle_post(handler, parsed) -> bool:
     if parsed.path == "/api/settings":
         from api.auth import (
             create_session,
+            get_password_hash,
             is_auth_enabled,
             parse_cookie,
             set_auth_cookie,
+            verify_password,
             verify_session,
         )
 
@@ -11350,6 +11519,7 @@ def handle_post(handler, parsed) -> bool:
             body["bot_name"] = (str(body["bot_name"]) or "").strip() or "Hermes"
 
         auth_enabled_before = is_auth_enabled()
+        password_auth_enabled_before = auth_enabled_before and get_password_hash() is not None
         current_cookie = parse_cookie(handler)
         logged_in_before = bool(current_cookie and verify_session(current_cookie))
         requested_password = bool(
@@ -11360,6 +11530,8 @@ def handle_post(handler, parsed) -> bool:
         requested_clear_password = bool(body.get("_clear_password") or requested_passwordless)
         if requested_passwordless:
             body["_clear_password"] = True
+
+        current_password = body.pop("_current_password", None)
 
         # #1560: HERMES_WEBUI_PASSWORD env var takes precedence in
         # api.auth.get_password_hash(), so writing password_hash to settings.json
@@ -11389,6 +11561,22 @@ def handle_post(handler, parsed) -> bool:
                     403,
                 )
 
+        # Auth-disable safety: when password auth is currently enabled, require
+        # the current password to change, clear, or switch to passwordless.
+        if auth_enabled_before and password_auth_enabled_before and (requested_password or requested_clear_password):
+            if not isinstance(current_password, str) or not current_password:
+                return bad(
+                    handler,
+                    "Current password is required to change or disable authentication.",
+                    403,
+                )
+            if not verify_password(current_password):
+                return bad(
+                    handler,
+                    "Current password is incorrect.",
+                    403,
+                )
+
         if requested_passwordless:
             from api.auth import _passkey_feature_flag_enabled
             from api.passkeys import registered_credentials
@@ -11401,6 +11589,13 @@ def handle_post(handler, parsed) -> bool:
             from api.passkeys import clear_credentials
 
             clear_credentials()
+
+        # Handle auth_disabled_acknowledged setting
+        ack = body.pop("_auth_disabled_acknowledged", None)
+        if ack is not None and not is_auth_enabled():
+            body["auth_disabled_acknowledged"] = bool(ack)
+        elif is_auth_enabled() or requested_password:
+            body["auth_disabled_acknowledged"] = False
 
         saved = save_settings(body)
         saved.pop("password_hash", None)  # never expose hash to client
@@ -11426,6 +11621,11 @@ def handle_post(handler, parsed) -> bool:
                 _clear_session_list_cache()
             except Exception:
                 pass
+            try:
+                from api.models import clear_cli_sessions_cache
+                clear_cli_sessions_cache()
+            except Exception:
+                pass
 
         auth_enabled_after = is_auth_enabled()
         auth_just_enabled = bool(
@@ -11439,8 +11639,20 @@ def handle_post(handler, parsed) -> bool:
             logged_in_after = True
 
         saved["auth_enabled"] = auth_enabled_after
+        saved["password_auth_enabled"] = get_password_hash() is not None
         saved["logged_in"] = logged_in_after
         saved["auth_just_enabled"] = auth_just_enabled
+        try:
+            from api.auth import _passkey_feature_flag_enabled as _pffe
+            from api.passkeys import registered_credentials as _rc
+            if _pffe():
+                saved["passkeys_enabled"] = bool(_rc())
+                saved["passwordless_enabled"] = bool(_rc()) and not saved["password_auth_enabled"]
+            else:
+                saved["passkeys_enabled"] = False
+                saved["passwordless_enabled"] = False
+        except Exception:
+            pass
 
         if not new_cookie:
             return j(handler, saved)
@@ -13365,6 +13577,7 @@ def _handle_tts(handler, parsed):
         "fr-CA-AntoineNeural", "fr-CA-JeanNeural",
         "fr-CA-SylvieNeural", "fr-CA-ThierryNeural",
         "fr-FR-DeniseNeural", "fr-FR-EloiseNeural", "fr-FR-HenriNeural",
+        "id-ID-GadisNeural",
     }
     if voice not in allowed:
         from api.helpers import bad as _bad
@@ -18318,15 +18531,13 @@ def _handle_session_compress(handler, body):
             if _sanitize_messages_for_api(s.messages) != original_messages:
                 return bad(handler, "Session was modified during compression; please retry.", 409)
 
-            s.messages = compressed
-            s.context_messages = compressed
-            s.tool_calls = []
+            s.context_messages = copy.deepcopy(compressed)
             s.active_stream_id = None
             s.pending_user_message = None
             s.pending_attachments = []
             s.pending_started_at = None
             s.pending_user_source = None
-            visible_after = visible_messages_for_anchor(compressed, auto_compression=False)
+            visible_after = visible_messages_for_anchor(s.messages, auto_compression=False)
             s.compression_anchor_visible_idx = max(0, len(visible_after) - 1) if visible_after else None
             s.compression_anchor_message_key = _anchor_message_key(visible_after[-1]) if visible_after else None
             summary_text = None

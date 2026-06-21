@@ -3,6 +3,98 @@
 
 ## [Unreleased]
 
+## [v0.51.559] — 2026-06-21 — Release TR (cron model picker copy polish)
+
+### Changed
+
+- **Clearer copy on the scheduled-job (cron) model picker.** The model field now explains that a job can use the profile default model at run time or be pinned to a specific provider/model, and no-agent (script-only) jobs show a hint that the model is unused since they run the configured script directly. Added regression test coverage for the picker and its localized strings. Thanks @TomBanksAU.
+
+## [v0.51.558] — 2026-06-21 — Release TQ (workspace tree shows symlinks that point outside the workspace)
+
+### Added
+
+- **The workspace file tree now shows symlinks whose target resolves outside the workspace, as display-only rows.** Previously these were silently dropped, so a link in your workspace simply didn't appear. They now show with an indicator that they point outside the workspace; they remain non-navigable (the read/list gate still blocks traversing through them), and the row deliberately does **not** disclose the resolved outside path or any target metadata. Thanks @claw-io.
+
+### Fixed
+
+- **A prompt dialog (rename / new file) could open without its Cancel button** right after viewing an outside-symlink's info dialog. The shared dialog's Cancel button is now always restored.
+
+## [v0.51.557] — 2026-06-21 — Release TP (jump-to-question stays discoverable on desktop)
+
+### Changed
+
+- **The per-turn "jump to question" button now stays visible on desktop/tablet, while the timestamp and action icons remain hover-only.** That affordance is navigation, not routine action chrome, so it no longer requires hovering to discover (mobile already showed it). The quieter timestamp/copy/action controls still reveal on hover or keyboard focus, keeping the transcript clean. Thanks @santastabber.
+
+## [v0.51.556] — 2026-06-21 — Release TO (Indonesian Edge TTS voice + Listen button state fix)
+
+### Added
+
+- **Indonesian Edge TTS voice (`Gadis`).** Added `id-ID-GadisNeural` to the Edge TTS voice allowlist and the voice picker. Thanks @latipun7.
+
+### Fixed
+
+- **The Listen (text-to-speech) button now reflects playing state for chunked Edge TTS playback.** It marks the speaking state at the start of playback so the button shows it's active instead of looking idle while audio plays. Thanks @latipun7.
+
+## [v0.51.555] — 2026-06-21 — Release TN (mobile reloads recover after compression rotation)
+
+### Fixed
+
+- **A mobile reload during context compression no longer makes the conversation look lost (#2980).** When a long turn was rotating through context compression and the browser reloaded (common on mobile), it could come back pointing at a hidden pre-compression snapshot, so the current conversation appeared to vanish. `GET /api/session` now surfaces the visible continuation for such a hidden snapshot and the UI follows it — bounded across repeated-compression hops, scoped to the session's own profile (it never resolves a session in another profile), and it only updates the URL/storage once the continuation actually loads. Thanks @george-andra.
+
+## [v0.51.554] — 2026-06-21 — Release TM (the transcript stays put when you scroll up during a live reply)
+
+### Fixed
+
+- **Scrolling up to read earlier messages during a live reply no longer snaps you back to the bottom (#4295).** During mid-stream transcript rebuilds the reader's viewport anchor is now preserved before any raw scroll-position fallback, and a manual scroll-away is treated as authoritative so the distance-based heuristic can't re-pin you to the bottom mid-answer. Readers who are following the bottom still auto-follow as before. Thanks @franksong2702.
+
+## [v0.51.553] — 2026-06-21 — Release TL (extensions diagnostics panel in Settings)
+
+### Added
+
+- **A read-only "Extensions" diagnostics pane in Settings (#4569 follow-up).** Backed by the `/api/extensions/status` endpoint, it shows whether the extension runtime/manifest loaded, the final same-origin asset URLs that get injected, and any sanitized warnings (stable codes and coarse sources only — never the configured filesystem path, raw environment values, or rejected URL strings). Includes an up-front trust-model note that extensions run in the WebUI browser origin. Read-only and observational. Thanks @santastabber.
+
+## [v0.51.552] — 2026-06-21 — Release TK (extension sidecar CSP documentation)
+
+### Changed
+
+- **Documented how extension sidecar assets interact with the Content-Security-Policy.** `docs/EXTENSIONS.md` now explains that same-origin extension scripts/styles load under the existing CSP and what the `connect-src` extra allowance covers, so extension authors know what's permitted without loosening the policy. Adds CSP-enforcement test coverage. Docs and tests only — no runtime change. Thanks @santastabber.
+
+## [v0.51.551] — 2026-06-21 — Release TJ (manual /compress keeps the visible conversation)
+
+### Fixed
+
+- **Manually compressing a session no longer makes earlier messages disappear from the conversation window (#3133).** The manual `/compress` action was overwriting the visible transcript with the reduced model-facing context (and clearing settled tool history), so messages vanished on screen and after reload even though only the model's context should shrink. It now preserves the visible transcript and tool history and prunes only the model-facing context payload — matching how automatic compression already behaves. Thanks @franksong2702.
+
+## [v0.51.550] — 2026-06-21 — Release TI (Transparent Stream keeps its activity after a turn settles or reloads)
+
+### Fixed
+
+- **In Transparent Stream activity mode, a settled turn no longer loses its tool calls and thinking on reload (#4568).** Previously, once a turn finished — and on every rehydrate path after that (switching away and back, tab hide/show, window blur/focus, hard reload, mid-stream reload) — a turn that settled with a persisted activity scene showed only the final answer; all of its tool-call and thinking activity disappeared. The persisted activity scene is now rendered as transparent event rows on settle and reload (the same persisted scene both display modes already use), with the intermediate progress narration preserved and only the prose that duplicates the final answer suppressed. Compact Worklog mode is unchanged. Thanks @nesquena-hermes (building on @franksong2702's anchor-scene work).
+
+## [v0.51.549] — 2026-06-21 — Release TH (hotfix: profile switching restored for single-user named profiles)
+
+### Fixed
+
+- **Profile switching works again for normal single-user named profiles (hotfix #4586).** A regression (since v0.51.528) wrongly treated any single user running under a named profile as an isolated multi-user deployment — because isolated mode was inferred from the `HERMES_HOME` path shape (`*/profiles/<name>`), which the agent launcher exports for any named profile. The Profiles tab showed only one profile and switching was disabled. Isolated single-profile mode now requires an explicit `HERMES_WEBUI_ISOLATED_PROFILE` opt-in and is never inferred from the path shape. The opt-in is also protected from being overridden by a profile's own `.env` (on both the live-env and runtime/background-worker paths), so a pinned profile can't disable its own isolation. Thanks @nesquena-hermes.
+
+## [v0.51.548] — 2026-06-21 — Release TG (extension load diagnostics)
+
+### Added
+
+- **A read-only diagnostics endpoint that reports why an extension didn't load (#4561 follow-up).** When the extension manifest or asset URLs are configured but something isn't showing up, `GET /api/extensions/status` now reports the cause (extension dir missing/invalid, manifest rejected, an asset URL rejected for not being same-origin, final asset counts) using stable diagnostic codes and coarse sources only — it never exposes the configured filesystem path, raw environment values, or rejected URL strings. Authenticated, GET-only, and observational (it doesn't change what loads). Thanks @santastabber.
+
+## [v0.51.547] — 2026-06-21 — Release TF (re-auth required before disabling password authentication)
+
+### Added
+
+- **You must now re-enter your current password before turning off (or clearing) password authentication.** Previously, an already-open WebUI session could disable the password gate with no challenge. Now any change, clear, or transition-to-passwordless of password auth requires the current password (a "sudo-mode" re-auth on `POST /api/settings`, returning 403 without it). First-time setup and environment-variable-locked instances are unaffected. Also adds an optional "I've reviewed this risk" acknowledgment that downgrades the persistent unauthenticated-instance nav warning to a quieter one. A guard against a hijacked or unattended session silently removing your auth. Thanks @starship-s.
+
+## [v0.51.546] — 2026-06-21 — Release TE (fix a flaky gateway-sync CI test)
+
+### Fixed
+
+- **Eliminated a non-deterministic CI test flake (#4557).** `test_gateway_sync` could intermittently fail (a session missing from `/api/sessions`) when a settings-visibility toggle rewrote the settings file inside the same `mtime_ns` bucket, colliding two cache layers. The session-list cache source stamp now includes a monotonic per-process settings-write counter (so a same-millisecond rewrite can't reuse a stale cache entry), and the model-layer CLI-sessions cache is now flushed on the visibility toggle. Test-infrastructure reliability only — no runtime behavior change. Thanks @rodboev.
+
 ## [v0.51.545] — 2026-06-20 — Release TD (extension manifest asset bundles)
 
 ### Added

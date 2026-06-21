@@ -25,12 +25,15 @@ Extensions can:
 - inject configured same-origin scripts before `</body>`
 - read a local JSON manifest that lists bundled scripts/styles to inject
 - call the normal WebUI APIs available to the browser session
+- call trusted local loopback sidecars directly from extension JavaScript when
+  the browser Content Security Policy allows that origin
 
 Extensions cannot, by themselves:
 
 - bypass WebUI authentication
 - serve files outside the configured extension directory
 - load third-party scripts/styles through the built-in injection config
+- register new WebUI backend routes or proxy arbitrary sidecar/backend traffic
 - change Hermes Agent permissions, models, memory, or tools unless they call
   existing authenticated APIs that already allow those changes
 
@@ -124,6 +127,42 @@ javascript:alert(1)
 These restrictions keep the existing Content Security Policy intact and avoid
 turning the extension hook into a third-party script loader. Invalid configured
 URLs are ignored rather than injected.
+
+## Trusted local sidecars
+
+Manifest-bundled extensions may integrate with a trusted local sidecar process,
+such as a desktop companion listening on `http://127.0.0.1:17787`. The injected
+extension JavaScript talks to that sidecar directly from the browser; Hermes
+WebUI does not proxy those requests and does not create extension-owned backend
+routes.
+
+Loopback sidecar origins are already included in WebUI's enforced CSP
+`connect-src` directive:
+
+```text
+http://127.0.0.1:*
+http://localhost:*
+http://ipc.localhost
+ws://127.0.0.1:*
+ws://localhost:*
+```
+
+The wildcard ports above cover any loopback port, including
+`http://127.0.0.1:17787`. For a trusted non-loopback origin that you explicitly
+control, append the exact origin with `HERMES_WEBUI_CSP_CONNECT_EXTRA` before
+starting WebUI:
+
+```bash
+HERMES_WEBUI_CSP_CONNECT_EXTRA=https://companion.example.internal \
+HERMES_WEBUI_EXTENSION_DIR=/path/to/my-extension/static \
+HERMES_WEBUI_EXTENSION_MANIFEST=extensions.json \
+./start.sh
+```
+
+`HERMES_WEBUI_CSP_CONNECT_EXTRA` accepts space-separated `http(s)://` or
+`ws(s)://` origins only. It rejects paths, directive injection, and invalid port
+numbers. Avoid wildcard or remote origins unless you fully control the target;
+extension JavaScript runs with the logged-in WebUI session's authority.
 
 ## Static file serving
 
@@ -252,3 +291,28 @@ HERMES_WEBUI_EXTENSION_SCRIPT_URLS=/extensions/app.js \
 ```
 
 Open the WebUI and confirm the badge appears.
+
+## Diagnostics
+
+Authenticated administrators can inspect sanitized extension configuration at:
+
+```text
+GET /api/extensions/status
+```
+
+The endpoint is read-only and follows the normal WebUI authentication rules. The
+same sanitized diagnostics are also shown in **Settings → Extensions** for
+operators who prefer to inspect extension state from the browser. The panel does
+not enable, disable, install, or mutate extensions; it only fetches
+`/api/extensions/status` and offers a copy-diagnostics action.
+
+The diagnostics return the same public asset URLs that can already be injected
+into the HTML, plus coarse manifest status, asset counts, and warning codes for
+rejected or unavailable configuration. `manifest.script_count` and
+`manifest.stylesheet_count` count accepted assets from the manifest only;
+`counts.script_urls` and `counts.stylesheet_urls` count the final post-env-merge
+URLs. `manifest.entry_count` counts the loaded top-level manifest object and
+enabled extension entries that were inspected, not every extension object in the
+file. The endpoint and Settings panel do **not** return
+`HERMES_WEBUI_EXTENSION_DIR`, resolved manifest paths, raw environment values, or
+rejected URL strings.
